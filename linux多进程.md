@@ -1013,3 +1013,263 @@ int main(){
 }
 ```
 
+### 实例：文件拷贝
+
+- 思路
+
+  1. 需要两个文件，一个是有内容的文件（待拷贝文件），一个是空文件
+  2. 由于有两个文件，需要两个内存映射区
+  3. 然后将文件A的内存映射区内容拷贝给文件B的内存映射区
+  4. 回收资源
+
+- code
+
+```c
+//使用内存映射实现文件拷贝功能
+/*
+    思路：
+        1、对原有文件创建内存映射
+        2、创建一个新文件
+        3、把新文件的数据映射到内存中
+        4、通过内存拷贝将第一个文件的内存拷贝到新的文件
+        5、释放资源
+*/
+#include <stdio.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+int main(){
+    int fd=open("test.txt",O_RDWR);
+    if(fd==-1){
+        perror("open");
+        exit(0);
+    }
+    int len=lseek(fd,0,SEEK_END);
+    int fd1=open("cpy.txt",O_RDWR | O_CREAT, 0664);
+    if(fd1==-1){
+        perror("open");
+        exit(0);
+    }
+    truncate("cpy.txt",len);
+    write(fd1," ",1);
+    void *ptr=mmap(NULL,len,PROT_READ | PROT_WRITE,MAP_SHARED,fd,0);
+    void *ptr1=mmap(NULL,len,PROT_READ | PROT_WRITE,MAP_SHARED,fd1,0);
+    if(ptr==MAP_FAILED){
+        perror("mmap");
+        exit(0);
+    }
+     if(ptr1==MAP_FAILED){
+        perror("mmap");
+        exit(0);
+    }
+    memcpy(ptr1,ptr,len);
+    munmap(ptr1,len);
+    munmap(ptr,len);
+
+    close(fd1);
+    close(fd);
+    return 0;
+}
+```
+
+- output
+
+​	![](C:\Users\11048\Desktop\Linux多进程\{89D3E347-560C-4757-91EA-56FF884E62E1}.png)
+
+![](C:\Users\11048\Desktop\Linux多进程\{0541663C-3F47-4138-9E76-BA4BCEB27183}.png)
+
+### 实例：匿名内存映射
+
+- 思路
+
+  1. 匿名内存映射不存在文件实体，那么只能通过父子进程实现
+  2. 父子进程操作同一块区域，重点在于内存映射区在创建时新增flags参数`MAP_ANONYMOUS`
+  3. 父进程读，子进程写
+- code
+
+```c
+/*
+    匿名映射：不需要文件进程的一个内存映射
+*/
+
+#include <stdio.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+int main(){
+    int len=4096;
+    void *ptr=mmap(NULL,len,PROT_READ | PROT_WRITE,MAP_SHARED | MAP_ANONYMOUS,-1,0);
+    if(ptr==MAP_FAILED){
+        perror("mmap");
+        exit(0);
+
+    }
+    //父子进程通信
+    pid_t pid=fork();
+    if(pid>0){
+        strcpy((char*)ptr,"hello world");
+        wait(NULL);
+    }
+    else if(pid==0){
+        sleep(1);
+        printf("%s\n",(char*)ptr);
+    }
+    munmap(ptr,len);
+    
+    return 0;
+}
+
+```
+
+- output
+
+![](C:\Users\11048\Desktop\Linux多进程\{C6E6E575-710B-4f70-8B19-32C4B92BBD73}.png)
+
+# 进程间通信之信号
+
+## 基本概念
+
+- 信号是 Linux 进程间通信的最古老的方式之一，是事件发生时对进程的通知机制，有时也称之为软件中断，它是在软件层次上对中断机制的一种模拟，是一种异步通信的方式。信号可以导致一个正在运行的进程被另一个正在运行的异步进程中断，转而处理某一个突发事件
+
+- 发往进程的诸多信号，通常都是源于内核。引发内核为进程产生信号的各类事件如下
+
+  - 对于前台进程，用户可以通过输入特殊的终端字符来给它发送信号。比如输入 `Ctrl+C` 通常会给进程发送一个中断信号
+  - 硬件发生异常，即硬件检测到一个错误条件并通知内核，随即再由内核发送相应信号给相关进程。比如执行一条异常的机器语言指令，诸如被 0 除，或者引用了无法访问的内存区域
+  - 系统状态变化，比如 alarm 定时器到期将引起 `SIGALRM` 信号，进程执行的 CPU 时间超限，或者该进程的某个子进程退出
+  - 运行 kill 命令或调用 kill 函数
+
+- 使用信号的两个主要目的是
+
+  - 让进程知道已经发生了一个特定的事情
+  - 强迫进程执行它自己代码中的信号处理程序
+
+- 信号的特点
+
+  - 简单
+  - 不能携带大量信息
+  - 满足某个特定条件才发送
+  - 优先级比较高
+
+- 查看系统定义的信号列表：`kill –l`，前 31 个信号为常规信号，其余为实时信号
+
+  ![](C:\Users\11048\Desktop\Linux多进程\{2E7924EB-34BB-453b-AA18-7FC832068DB2}.png)
+
+## 信号一览表及特点
+
+- 可通过`man 7 signal`查看帮助
+- 信号的 5 中默认处理动作
+  - `Term`：终止进程
+  - `Ign`：当前进程忽略掉这个信号
+  - `Core`：终止进程，并生成一个Core文件
+  - `Stop`：暂停当前进程
+  - `Cont`：继续执行当前被暂停的进程
+- 信号的几种状态：`产生`、`未决`、`递达`
+- `SIGKILL` 和 `SIGSTOP` 信号不能被捕捉、阻塞或者忽略，只能执行默认动作
+
+## 信号相关的函数
+
+### core文件生成及调试
+
+- 当进程异常终止时，会生成`core`文件（需要进行相应设置），可以通过`gdb`调试查看错误，调试以下程序
+
+- code
+
+  ```c
+  #include <stdio.h>
+  #include <string.h>
+  
+  int main()
+  {
+      char* buf;
+      strcpy(buf, "core test");
+      return 0;
+  }
+  ```
+
+- 生成调试`core`文件需要做以下几步
+
+  1. 使用`ulimit -a`查看资源上限
+
+  2. 修改`core size`：`ulimit -c core-size`
+
+  3. 在编译运行程序时加上`-g`选项使得能够被`gdb`调试，运行后生成`core`文件
+
+  4. 调试`core`程序：`gdb test`进入`gdb`终端，使用`core-file core`可以查看`core`定位错误
+
+### kill & raise & abort
+
+- `int kill(pid_t pid, int sig);`
+  - 使用`man 2 kill`查看帮助
+  - 功能：给**任何的进程或者进程组**`pid`，发送**任何的信号** `sig`
+  - 参数
+    - `pid`
+      - `> 0` : 将信号发送给指定的进程
+      - `= 0` : 将信号发送给当前的进程组
+      - `= -1` : 将信号发送给每一个有权限接收这个信号的进程
+      - `< -1` : 这个`pid=某个进程组的ID取反`
+    - `sig` : 需要发送的信号的编号或者是宏值，0表示不发送任何信号
+  - 返回值：0成功，-1失败
+- `int raise(int sig);`
+  - 使用`man 3 raise`查看帮助
+  - 功能：给**当前进程**发送信号
+  - 参数：`sig` : 要发送的信号
+  - 返回值：0成功，非0失败
+- `void abort(void);`
+  - 使用`man 3 abort`查看帮助
+  - 功能： 发送`SIGABRT`信号给当前的进程，**杀死当前进程**
+- code
+
+```c
+/*
+    #include <sys/types.h>
+    #include <signal.h>
+    int kill(pid_t pid, int sig);
+        -功能：给某个进程pid，发送某个信号sig
+        -参数：
+            -pid：需要发送给的进程
+            -sig: 需要发送的信号的编号或者是宏值
+    int raise(int sig);
+        -功能：给当前进程发送信号
+        -参数：
+            -sig:要发送的信号
+        -返回值：
+            -成功 0
+            -失败 非0  
+    void abort(void);
+        -功能：发送SIGABRT信号给当前进程，杀死当前进程
+
+     
+*/
+ #include <sys/types.h>
+ #include <signal.h>
+ #include <stdio.h>
+ #include <unistd.h>
+ int main(){
+    pid_t pid=fork();
+    if(pid>0){
+        printf("parent process\n");
+        sleep(2);
+        printf("kill child process now\n");
+        kill(pid,SIGINT);
+    }
+    else if(pid==0){
+        int i=0;
+        for(i=0;i<5;i++){
+            printf("child process\n");
+            sleep(1);
+        }
+    }
+    return 0;
+ }
+```
+
+![](C:\Users\11048\Desktop\Linux多进程\{036F1D12-3D19-48d4-BB0F-B7E34A6E5B72}.png)
