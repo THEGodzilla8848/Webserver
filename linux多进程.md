@@ -1273,3 +1273,326 @@ int main(){
 ```
 
 ![](C:\Users\11048\Desktop\Linux多进程\{036F1D12-3D19-48d4-BB0F-B7E34A6E5B72}.png)
+
+
+
+### alarm & setitimer
+
+- 区别：`alarm`只能定一次时，`setitimer`可以周期性定时
+
+- `unsigned int alarm(unsigned int seconds);`
+  - 使用`man 2 alarm`查看帮助
+  - 功能：设置定时器（闹钟）。函数调用，开始倒计时，当倒计时为0的时候，函数会给当前的进程发送一个信号：`SIGALARM`
+  - 参数：`seconds`，倒计时的时长，单位：秒。如果参数为0，定时器无效（不进行倒计时，不发信号）
+  - 取消一个定时器，通过`alarm(0)`
+  - 返回值
+    - 之前没有定时器，返回0
+    - 之前有定时器，返回之前的定时器剩余的时间
+- `SIGALARM` ：默认终止**当前的进程**，每一个进程都有且只有唯一的一个定时器
+- 定时器，与进程的状态无关（自然定时法）。无论进程处于什么状态，alarm都会计时，即**函数不阻塞**
+
+```c
+/*
+    #include <unistd.h>
+    unsigned int alarm(unsigned int seconds);
+        -功能：设置定时器，函数调用，开启倒计时，当倒计时为0时，函数
+        会发送一个信号：SIGALARM
+        -参数：
+            seconds:倒计时的时长，单位：秒
+        -返回值：倒计时剩余时间
+
+    -SIGALARM：默认终止当前进程，每一个进程有且只有唯一一个定时器
+
+
+
+*/
+#include <unistd.h>
+#include <stdio.h>
+
+int main(){
+    int seconds=alarm(5);
+    printf("seconds = %d\n",seconds);
+
+    sleep(2);
+    seconds = alarm(2);
+    printf("seconds = %d\n",seconds);
+
+    while(1){
+
+    }
+    return 0;
+}
+```
+
+- `int setitimer(int which, const struct itimerval *new_val, struct itimerval *old_value);`
+
+  - 使用`man 2 setitimer`查看帮助
+  - 功能：设置定时器（闹钟）。可以替代alarm函数。精度微妙us，可以实现周期性定时
+  - 参数
+    - `which` : 定时器以什么时间计时
+      - `ITIMER_REAL`: 真实时间，时间到达，发送 `SIGALRM` (常用)
+      - `ITIMER_VIRTUAL`: 用户时间，时间到达，发送 `SIGVTALRM`
+      - `ITIMER_PROF`: 以该进程在用户态和内核态下所消耗的时间来计算，时间到达，发送 `SIGPROF`
+    - `new_value`: 设置定时器的属性
+    - `old_value` ：记录上一次的定时的时间参数，一般不使用，指定NULL
+  - 返回值：成功 0，失败 -1 并设置错误号
+
+- `struct itimerval`
+
+  ```c
+  struct itimerval {      // 定时器的结构体
+      struct timeval it_interval;  // 每个阶段的时间，间隔时间
+      struct timeval it_value;     // 延迟多长时间执行定时器
+  };
+  
+  struct timeval {        // 时间的结构体
+      time_t      tv_sec;     //  秒数     
+      suseconds_t tv_usec;    //  微秒    
+  };
+  
+  // 过it_value秒后，每隔it_interval秒定时一次
+  ```
+
+- 实现**过3秒以后，每隔2秒钟定时一次**=>因为没有**信号捕捉**，所以还没有实现这样的效果
+
+```c
+/*
+    #include <sys/time.h>
+    int setitimer(int which, const struct itimerval *new_value,struct itimerval *old_value);
+        -功能：设置定时器，可以代替alarm函数，精度微秒
+        -参数：
+            -which：定时器以什么时间计时
+                ITIMER_REAL：真实时间，时间到达，发送SIGALARM
+                ITIMER_VIRTUAL：用户时间
+                ITIMER_PROF：该进程在用户态和内核态下消耗的时间
+            -new_value:设置定时器属性
+            struct itimerval {
+               struct timeval it_interval; 
+               struct timeval it_value;    
+            };
+
+           struct timeval {
+               time_t      tv_sec;         
+               suseconds_t tv_usec;       
+           };
+
+            -old_value:
+                记录上一次定时的参数
+*/              
+
+#include <sys/time.h>
+#include <stdio.h>
+
+int main(){
+    struct itimerval new_value;
+    new_value.it_interval.tv_sec=2;
+    new_value.it_interval.tv_usec=0;
+
+    new_value.it_value.tv_sec=3;
+    new_value.it_value.tv_usec=0;
+   int ret=setitimer(ITIMER_REAL, &new_value,NULL);
+
+    getchar();
+    return 0;
+}
+```
+
+![](C:\Users\11048\Desktop\Linux多进程\{116310A2-DEA7-4f86-9BEA-2A2DC15A4BD1}.png)
+
+## 信号捕捉函数
+
+### signal
+
+- `sighandler_t signal(int signum, sighandler_t handler);`
+
+  - 使用`man 2 signal`查看帮助
+  - 功能：设置某个信号的捕捉行为
+  - 参数
+    - `signum`: 要捕捉的信号
+    - `handler`: 捕捉到信号要如何处理
+      - `SIG_IGN` ： 忽略信号
+      - `SIG_DFL` ： 使用信号默认的行为
+      - `自定义回调函数`
+    - 返回值
+      - 成功，返回上一次注册的信号处理函数的地址。第一次调用返回NULL
+      - 失败，返回SIG_ERR，设置错误号
+      - 注意：返回值定义在宏`__USE_GNU`中，需要指定或者直接在程序中使用`typedef __sighandler_t sighandler_t;`
+    - `SIGKILL`和`SIGSTOP`不能被捕捉，不能被忽略
+
+- 完善**过3秒以后，每隔2秒钟定时一次的定时器功能**
+
+```c
+/*
+    #include <signal.h>
+    typedef void (*sighandler_t)(int);
+    sighandler_t signal(int signum, sighandler_t handler);
+        -功能：去设置某个信号捕捉行为
+        -参数：
+            -signum:要捕捉的信号
+            -handler:要如何处理信号
+                -SIG_IGN：忽略信号
+                -SIG_DFL：使用信号默认行为
+                -回调函数：内核调用，程序员只负责写，捕捉到信号后如何处理
+        -返回值：
+            成功：返回上一次注册的信号处理函数的地址，第一次调用返回NULL
+            失败：返回SIG_ERR，设置错误号
+
+
+
+    -SIGKILL SIGSTOP不能被捕捉不能被忽略
+
+*/
+#include <sys/time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+
+void myalarm(int num){
+    printf("捕捉到信号的编号是： %d\n",num);
+
+
+}
+int main(){
+    //捕捉信号
+    //signal(SIGALRM,SIG_IGN);
+    signal(SIGALRM,myalarm);
+    struct itimerval new_value;
+    new_value.it_interval.tv_sec=2;
+    new_value.it_interval.tv_usec=0;
+
+    new_value.it_value.tv_sec=3;
+    new_value.it_value.tv_usec=0;
+   int ret=setitimer(ITIMER_REAL, &new_value,NULL);
+
+    getchar();
+    return 0;
+}
+```
+
+## 信号集
+
+### 基本概念
+
+- 使用`man 3 sigset`查看帮助
+
+- 许多信号相关的系统调用都需要能表示一组不同的信号，多个信号可使用一个称之为信号集的数据结构来表示，其系统数据类型为 `sigset_t`
+- 在 PCB 中有两个非常重要的信号集。一个称之为 `阻塞信号集` ，另一个称之为`未决信号集`。这两个信号集都是**内核使用位图机制来实现**的。但操作系统不允许我们直接对这两个信号集进行位操作。而需自定义另外一个集合，借助信号集操作函数来对 PCB 中的这两个信号集进行修改
+- 信号的 `未决` 是一种状态，指的是**从信号的产生到信号被处理前的这一段时间**
+- 信号的 `阻塞` 是一个开关动作，指的是**阻止信号被处理，但不是阻止信号产生**。信号的阻塞就是让系统暂时保留信号留待以后发送。由于另外有办法让系统忽略信号，所以一般情况下信号的阻塞只是暂时的，只是为了防止信号打断敏感的操作
+
+### 阻塞信号集与非阻塞信号集说明
+
+1. 用户通过键盘  `Ctrl + C`, 产生2号信号 `SIGINT` (信号被创建)
+2. 信号产生但是没有被处理 （未决）
+   - 在内核中将所有的没有被处理的信号存储在一个集合中 （未决信号集）
+   - `SIGINT`信号状态被存储在第二个标志位上
+     - 这个标志位的值为0， 说明信号不是未决状态
+     - 这个标志位的值为1， 说明信号处于未决状态
+3. 这个未决状态的信号，需要被处理，处理之前需要和另一个信号集（阻塞信号集），进行比较
+   - 阻塞信号集默认不阻塞任何的信号
+   - 如果想要阻塞某些信号需要用户调用系统的API
+4. 在处理的时候和阻塞信号集中的标志位进行查询，看是不是对该信号设置阻塞了
+   - 如果没有阻塞，这个信号就被处理
+   - 如果阻塞了，这个信号就继续处于未决状态，直到阻塞解除，这个信号就被处理
+
+### 操作自定义信号集函数(sigemptyset等)
+
+- 使用`man 3 sigemptyset`查看帮助
+- `int sigemptyset(sigset_t *set);`
+  - 功能：清空信号集中的数据，将信号集中的所有的标志位置为0
+  - 参数：`set`，传出参数，需要操作的信号集
+  - 返回值：成功返回0， 失败返回-1
+- `int sigfillset(sigset_t *set);`
+  - 功能：将信号集中的所有的标志位置为1
+  - 参数：`set`，传出参数，需要操作的信号集
+  - 返回值：成功返回0， 失败返回-1
+- `int sigaddset(sigset_t *set, int signum);`
+  - 功能：设置信号集中的某一个信号对应的标志位为1，表示阻塞这个信号
+  - 参数
+    - `set`：传出参数，需要操作的信号集
+    - `signum`：需要设置阻塞的那个信号
+  - 返回值：成功返回0， 失败返回-1
+- `int sigdelset(sigset_t *set, int signum);`
+  - 功能：设置信号集中的某一个信号对应的标志位为0，表示不阻塞这个信号
+  - 参数
+    - `set`：传出参数，需要操作的信号集
+    - `signum`：需要设置不阻塞的那个信号
+  - 返回值：成功返回0， 失败返回-1
+- `int sigismember(const sigset_t *set, int signum);`
+  - 功能：判断某个信号是否阻塞
+  - 参数
+    - `set`：传入参数，需要操作的信号集
+    - `signum`：需要判断的那个信号
+  - 返回值
+    - 1 ： `signum`被阻塞
+    - 0 ： `signum`不阻塞
+    - -1 ： 失败
+
+
+
+```c
+/*
+    int sigemptyset(sigset_t *set);
+        -功能：清空信号集中的数据，将信号集所有标志位记为0
+        -参数：set传出参数，需要处理的信号集
+        -返回值：0成功，-1失败
+    int sigfillset(sigset_t *set)
+        -功能：将信号集所有标志位记为1
+        -参数：set传出参数，需要处理的信号集
+        -返回值：0成功，-1失败
+    int sigaddset(sigset_t *set,int signum)
+        -功能：设置信号集中的某一个信号对应的标志位为1，表示阻塞这个信号
+        -参数：
+            -set:传出参数，需要处理的信号集
+            -signum:需要设置阻塞的那个信号
+        -返回值：0成功，-1失败
+    int sigdelset(sigset_t *set,int signum)
+        -功能：设置信号集中的某一个信号对应的标志位为0，表示不阻塞这个信号
+        -参数：
+            -set传出参数，需要处理的信号集
+            -signum:需要设置不阻塞的那个信号
+        -返回值：0成功，-1失败
+    int sigismember(const sigset_t *set,int signum);
+        -功能：判断这个信号是否阻塞
+        -参数：
+            -set:传出参数，需要处理的信号集
+            -signum:需要设置判断的那个信号
+        返回值：1阻塞，0不阻塞，-1失败
+
+*/
+#include <sys/time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+int main(){
+    sigset_t set;
+    sigemptyset(&set);
+
+    int ret=sigismember(&set,SIGINT);
+    if(ret==0){
+        printf("信号未阻塞\n");
+    }
+    else if(ret==1){
+        printf("信号阻塞\n");
+    }
+    sigaddset(&set,SIGINT);
+    ret=sigismember(&set,SIGINT);
+    if(ret==0){
+        printf("信号未阻塞\n");
+    }
+    else if(ret==1){
+        printf("信号阻塞\n");
+    }
+
+    sigdelset(&set,SIGINT);
+    ret=sigismember(&set,SIGINT);
+    if(ret==0){
+        printf("信号未阻塞\n");
+    }
+    else if(ret==1){
+        printf("信号阻塞\n");
+    }
+    return 0;
+}
+```
+
